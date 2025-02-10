@@ -1,0 +1,21 @@
+# HIGH-RISK TOKENS BLACKLIST
+# Last updated: 2025-01-28
+# Format: address|reason|date_added|risk_score
+
+# Known Rugpulls
+7KEPEk4uxuX7HESFxwsVd3ESwEBc5h1LV5y6RtpNKN6c|confirmed_rugpull|2024-12-15|100
+4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R|liquidity_removed|2024-12-20|95
+
+# Honeypot Patterns
+FmW7USuqGKqHxbP7TyNDqzNqs7W8DyujvXRef9LhHtDK|honeypot_confirmed|2024-12-28|100
+9xpuQcF3FBgA7JkJrLGZi9TgKUsz7tHsoF6UbdrZhSqV|sell_disabled|2025-01-02|90
+
+# Suspicious Token Mechanics
+HGt8j2q3pUKzZYvwQkjtgt9ydnWYxJxbk8xpjQWKBXBD|manipulated_supply|2025-01-10|85
+6KWTA3RKtjVfiuGkSY6nGh4uQxaRyY8EqSe4GhXe8MxD|flash_loan_attack|2024-12-25|95
+
+# Dev Teams with Multiple Rugs
+2xRciNAPG5YwE9UAf7EpKpS6DrX4hqn7RDJmYxTmEhpK|repeat_offender|2025-01-15|90
+
+# Exchange Compromise
+8qJnSHG7i4scZSSW9wPFbPqBf5EmGuWgZKHgjEfJF1yq|cex_hack_related|2024-11-30|100

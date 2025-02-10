@@ -1,0 +1,35 @@
+# MALICIOUS CONTRACT PATTERNS
+# Last updated: 2025-01-28
+# Format: pattern|description|severity|detection_method
+
+# Honeypot Patterns
+.*(?:blacklist|blocklist).*|Address blocking mechanism|CRITICAL|regex
+.*(?:cannot_sell|disable_sell).*|Sell restriction pattern|CRITICAL|regex
+
+# Ownership Manipulation
+.*(?:revoke_ownership|force_transfer).*|Unauthorized ownership changes|HIGH|regex
+.*(?:hidden_owner|proxy_admin).*|Concealed ownership pattern|HIGH|regex
+
+# Fee Manipulation
+.*(?:change_fee|update_tax).*>100|Excessive fee modification|CRITICAL|regex
+.*(?:dynamic_tax|flexible_fee).*|Dynamic fee structure|HIGH|regex
+
+# Liquidity Control
+.*(?:remove_liquidity|drain_pool).*|Unauthorized liquidity removal|CRITICAL|regex
+.*(?:lock_trading|pause_swap).*|Trading restriction pattern|HIGH|regex
+
+# Supply Manipulation
+.*(?:mint_token|increase_supply).*!authorized|Unauthorized minting|CRITICAL|regex
+.*(?:rebase|elastic_supply).*hidden|Hidden supply manipulation|HIGH|regex
+
+# Flash Loan Attack Vectors
+.*(?:flash_loan|flash_swap).*exploit|Flash loan exploitation|CRITICAL|regex
+.*(?:price_manipulation|oracle_attack).*|Price oracle manipulation|HIGH|regex
+
+# Backdoor Functions
+.*(?:hidden_mint|stealth_transfer).*|Concealed functionality|CRITICAL|regex
+.*(?:emergency_withdraw|rescue_token).*!timelock|Unauthorized withdrawal|HIGH|regex
+
+# Complex Attack Patterns
+(?s).*initialize.*owner.*approve.*transfer.*|Multi-step attack pattern|CRITICAL|regex
+(?s).*check_balance.*update_state.*execute_trade.*|State manipulation pattern|HIGH|regex

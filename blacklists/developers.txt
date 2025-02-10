@@ -1,0 +1,21 @@
+# MALICIOUS DEVELOPER ADDRESSES
+# Last updated: 2025-01-28
+# Format: address|reason|incident_count|last_incident|risk_score
+
+# Multiple Rugpull Perpetrators
+5bWjKEUjHQEpbBVA8P4J6HgPYfvGzGJcjhqJWjKH5YKr|serial_rugpull|5|2024-12-20|100
+7EBQFZ4LKQt7JUrJKwsyN2W6DeM6tTKr8P8UGRvYYYaz|token_manipulation|3|2025-01-15|90
+
+# Contract Exploiters
+3KjqYEGMQwz1y6rNwYHCiqVwfob7uXj3Nf6kUHB8Pjmi|exploit_deployment|4|2024-11-28|95
+9qPjvN8UCxHFBwzThG7VgFtFJCJN9Lh4WtLDHxUBCqS3|backdoor_insertion|2|2025-01-05|85
+
+# Wash Trading Operators
+4mZwGHCrnYLmBAW3mRZxGTTqzXuUVfGEkzLqH7nEshJ6|wash_trading|6|2024-12-30|80
+2vXmRzYKYPFqVqfwz1JhWVBxNBKJqxfAE9YZdjgbSQW8|price_manipulation|3|2025-01-10|75
+
+# Smart Contract Vulnerabilities
+6nKqHJHMqQyGwQf8Jk2VE9Vp4BjyJ9LZ1r5ZEmGwMxRd|vulnerable_code|2|2024-12-15|70
+
+# Fund Misappropriation
+8tNwJ5rL2KQxGZVmUx9J3Y1HqyZoXw4E6RfPzvG9WcYu|treasury_drain|1|2025-01-20|100
