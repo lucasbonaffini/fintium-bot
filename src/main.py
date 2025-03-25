@@ -29,14 +29,9 @@ async def setup_logging():
 async def verify_environment():
     """Verify all required environment variables are set"""
     required_vars = [
-        'TELEGRAM_API_ID',
-        'TELEGRAM_API_HASH',
-        'TELEGRAM_PHONE',
-        'TELEGRAM_BOT_TOKEN',
-        'TELEGRAM_CHAT_ID',
-        'DB_PASSWORD',
-        'SOLSCAN_API_KEY',
-        'DEFAULT_DEX'
+        'BINANCE_API_KEY',
+        'BINANCE_API_SECRET',
+        'DB_PASSWORD'
     ]
     
     missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -49,48 +44,37 @@ async def verify_environment():
 async def main():
     bot = None
     try:
-        # Cargar variables de entorno
+        # Load environment variables
         load_dotenv()
         
-        # Configurar logging
+        # Configure logging
         await setup_logging()
         
-        # Verificar variables de entorno
+        # Verify environment variables
         await verify_environment()
         
         logging.info("Starting trading bot...")
         
-        # Crear e inicializar el bot
+        # Create and initialize the bot
         bot = TradingBot()
         
-        # Inicializar componentes
+        # Initialize components
         await bot.initialize()
         
-        # Ejecutar el loop principal
+        # Run the main loop
         await bot.run()
         
     except Exception as e:
         logging.critical(f"Fatal error in main: {str(e)}", exc_info=True)
-        if bot and hasattr(bot, 'unibot'):
-            await bot.unibot.close()
+        if bot:
+            await bot.close()
         sys.exit(1)
 
 if __name__ == "__main__":
     try:
-        # Manejar la limpieza de archivos de sesión al inicio
-        session_files = glob.glob("*.session")
-        for file in session_files:
-            try:
-                os.remove(file)
-                logging.info(f"Removed old session file: {file}")
-            except Exception as e:
-                logging.warning(f"Could not remove session file {file}: {e}")
-
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Bot stopped by user")
     except Exception as e:
         logging.critical(f"Unexpected error: {str(e)}", exc_info=True)
         sys.exit(1)
-
-

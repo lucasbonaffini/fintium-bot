@@ -3,81 +3,52 @@ from typing import Dict, List, Optional, Set
 import os
 
 @dataclass
-class FilterConfig:
-    min_liquidity: float = 10000  # Minimum liquidity in USD
-    min_market_cap: float = 50000  # Minimum market cap in USD
-    min_holders: int = 100  # Minimum number of holders
-    max_holder_percentage: float = 15.0  # Maximum percentage a single holder can have
-    min_age_hours: int = 24  # Minimum token age in hours
-    # Trading parameters
-    min_position_size: float = 0.1    # Mínimo 0.1 SOL
-    max_position_size: float = 1.0    # Máximo 1 SOL
-    max_market_impact: float = 1.0    # Máximo 1% de impacto
-    risk_multiplier: float = 0.01     # 1% de la liquidez como base
-    volatility_adjust: bool = True    # Ajustar por volatilidad
-    take_profit: float = 300.0        # 300% take profit
-    stop_loss: float = 10.0           # Slippage máximo permitido
-    forbidden_names: Set[str] = field(default_factory=lambda: {
-        "test", "scam", "rug", "honeypot", "squid"
-    })
-    suspicious_patterns: Set[str] = field(default_factory=lambda: {
-        r"^test\d*$",
-        r".*copyr.*",
-        r".*©.*",
-    })
-
-@dataclass
-class BlacklistConfig:
-    # Known malicious token addresses
-    blacklisted_tokens: Set[str] = field(default_factory=set)
-    # Known malicious developer addresses
-    blacklisted_developers: Set[str] = field(default_factory=set)
-    # Blacklisted contract patterns
-    blacklisted_contract_patterns: Set[str] = field(default_factory=lambda: {
-        r".*honeypot.*",
-        r".*rug.*",
-    })
-    # Load blacklists from files
-    blacklist_files: Dict[str, str] = field(default_factory=lambda: {
-        'tokens': 'blacklists/tokens.txt',
-        'developers': 'blacklists/developers.txt',
-        'contracts': 'blacklists/contracts.txt'
-    })
+class TradingStrategyConfig:
+    # Moving Average Configuration
+    fast_ma_period: int = 20       # Fast moving average period (short-term)
+    slow_ma_period: int = 50       # Slow moving average period (long-term)
+    ma_type: str = "EMA"           # Type of moving average: "SMA", "EMA", "WMA"
+    timeframe: str = "1h"          # Timeframe for analysis
+    
+    # Position sizing and risk management
+    min_position_size: float = 0.00001  # Minimum BTC position size (reduced even more for testing)
+    max_position_size: float = 0.1    # Maximum BTC position size
+    risk_per_trade: float = 0.03      # 3% risk per trade (increased slightly)
+    take_profit: float = 3.0          # 3% take profit
+    stop_loss: float = 1.5            # 1.5% stop loss
+    
+    # Additional parameters
+    max_active_trades: int = 3        # Maximum concurrent trades
+    min_volume: float = 100          # Minimum volume for BTC/USDT trading
 
 @dataclass
 class DatabaseConfig:
-    host: str = "localhost"
-    port: int = 5432
-    database: str = "dexscreener"
-    user: str = "admin"
-    password: str = ""
+    host: str = field(default_factory=lambda: os.getenv('DB_HOST', 'localhost'))
+    port: int = field(default_factory=lambda: int(os.getenv('DB_PORT', '5432')))
+    database: str = field(default_factory=lambda: os.getenv('DB_NAME', 'trading_bot'))
+    user: str = field(default_factory=lambda: os.getenv('DB_USER', 'admin'))
+    password: str = field(default_factory=lambda: os.getenv('DB_PASSWORD', ''))
 
 @dataclass
-class DexScreenerConfig:
-    base_url: str = "https://api.dexscreener.com/latest"
-    rate_limit: float = 1.0
+class BinanceConfig:
+    api_key: str = field(default_factory=lambda: os.getenv('BINANCE_API_KEY', ''))
+    api_secret: str = field(default_factory=lambda: os.getenv('BINANCE_API_SECRET', ''))
+    base_url: str = "https://api.binance.com"
+    testnet: bool = False  # Set to True to use testnet
+    rate_limit: float = 10.0  # Requests per second
     timeout: int = 30
-    
-@dataclass
-class SolscanConfig:
-    api_key: str = field(default_factory=lambda: os.getenv('SOLSCAN_API_KEY', ''))
-    base_url: str = field(default_factory=lambda: os.getenv('SOLSCAN_BASE_URL', 'https://public-api.solscan.io'))
-    rate_limit: float = field(default_factory=lambda: float(os.getenv('SOLSCAN_RATE_LIMIT', '1.0')))
-    timeout: int = 30
-    cache_duration: int = 300  # 5 minutes cache for responses
+    cache_duration: int = 60  # 1 minute cache for responses
     retries: int = 3  # Number of retry attempts
-    retry_delay: int = 2  # Seconds between retries
+    retry_delay: int = 1  # Seconds between retries
 
 @dataclass
 class Config:
     db: DatabaseConfig = field(default_factory=DatabaseConfig)
-    filters: FilterConfig = field(default_factory=FilterConfig)
-    blacklists: BlacklistConfig = field(default_factory=BlacklistConfig)
-    solscan: SolscanConfig = field(default_factory=SolscanConfig)
-    log_level: str = "INFO"
-    max_total_exposure: float = 100000  # Máxima exposición total permitida
-    max_position_size: float = 10000    # Tamaño máximo de posición individual
-    default_gas_gwei: int = 50          # Gas por defecto en GWEI
-    slippage_percent: float = 1.0       # Slippage por defecto
-    take_profit_percent: float = 50.0   # Take profit por defecto
-    stop_loss_percent: float = 10.0     # Stop loss por defecto
+    strategy: TradingStrategyConfig = field(default_factory=TradingStrategyConfig)
+    binance: BinanceConfig = field(default_factory=BinanceConfig)
+    log_level: str = field(default_factory=lambda: os.getenv('LOG_LEVEL', 'INFO'))
+    max_total_exposure: float = 0.5     # Maximum 0.5 BTC total exposure
+    default_pair: str = field(default_factory=lambda: os.getenv('DEFAULT_PAIR', 'BTC/USDT'))  # Default trading pair
+    max_trades_per_day: int = 5         # Maximum number of trades per day
+    backtest_mode: bool = field(default_factory=lambda: os.getenv('BACKTEST_MODE', 'false').lower() == 'true')  # Enable/disable backtesting mode
+    slippage_percent: float = 0.1       # Default slippage percentage

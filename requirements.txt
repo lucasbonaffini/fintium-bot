@@ -1,8 +1,11 @@
 certifi==2024.2.2
-python-telegram-bot==20.8
 aiohttp==3.9.1
 sqlalchemy==2.0.25
 pandas==2.1.4
 numpy==1.26.3
 python-dotenv==1.0.0
 scikit-learn==1.4.0
+ccxt==4.3.33
+matplotlib==3.9.0
+ta==0.11.0
+psycopg2==2.9.10

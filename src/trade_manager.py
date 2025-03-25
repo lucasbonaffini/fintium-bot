@@ -1,214 +1,437 @@
 import logging
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
 import asyncio
-from market_analyzer import MarketAnalyzer
-from dexscreener_client import DexScreenerClient
-from rugcheck_client import RugCheckClient
-from security_manager import SecurityManager
-from unibot_client import UnibotSolanaClient
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
+import numpy as np
+
+from config import Config
+from strategy import MovingAverageCrossover
+from binance_client import BinanceClient
+from database import Database
+from models import Symbol, Trade, Candle
 
 class TradeManager:
-    def __init__(
-        self,
-        unibot: UnibotSolanaClient,
-        analyzer: MarketAnalyzer,
-        dexscreener: DexScreenerClient,
-        rugcheck: RugCheckClient,
-        security: SecurityManager
-    ):
-        self.unibot = unibot
-        self.analyzer = analyzer
-        self.dexscreener = dexscreener
-        self.rugcheck = rugcheck
-        self.security = security
-        self.active_trades = {}
-        self.trade_history = []
+    def __init__(self, config: Config, binance_client: BinanceClient, database: Database):
+        self.config = config
+        self.binance_client = binance_client
+        self.database = database
+        self.strategy = MovingAverageCrossover(config.strategy)
+        self.logger = logging.getLogger(__name__)
+        self.active_trades = {}  # Dict of active trade IDs to trade objects
+        self.trading_pairs = [config.default_pair]  # Start with default pair
+        self.trade_lock = asyncio.Lock()
         
-    async def process_trading_opportunity(self, token_data: Dict) -> bool:
-        """Process a potential trading opportunity"""
-        try:
-            token_address = token_data.get('address')
-            
-            # Skip if already trading
-            if token_address in self.active_trades:
-                return False
-                
-            # Security checks
-            security_passed, security_msg = await self.security.check_token_security(token_address)
-            if not security_passed:
-                logging.info(f"Security check failed for {token_address}: {security_msg}")
-                return False
-                
-            # Rugcheck analysis
-            rugcheck_passed, rugcheck_msg = await self.rugcheck.analyze_token_safety(token_address)
-            if not rugcheck_passed:
-                logging.info(f"Rugcheck failed for {token_address}: {rugcheck_msg}")
-                return False
-            
-            # Get wallet status
-            wallet_status = await self.unibot.get_wallet_status()
-            if not wallet_status:
-                logging.error("Could not get wallet status")
-                return False
-                
-            # Market analysis
-            should_trade, confidence, reason = self.analyzer.analyze_token(token_data)
-            if not should_trade:
-                logging.info(f"Analysis rejected trade for {token_address}: {reason}")
-                return False
-            
-            # Calculate position size
-            position_size = self.analyzer.calculate_position_size(
-                token_data,
-                float(wallet_status.get('sol_balance', '0').split()[0])
+    async def initialize(self):
+        """Initialize the trade manager"""
+        self.logger.info("Initializing trade manager")
+        
+        # Load active trades from database
+        open_trades = await self.database.get_open_trades()
+        for trade in open_trades:
+            symbol = await self.database.get_symbol_by_name(trade.symbol.symbol)
+            if symbol:
+                self.active_trades[trade.id] = trade
+        
+        self.logger.info(f"Loaded {len(self.active_trades)} active trades from database")
+        
+        # Setup trading pairs symbols in database
+        for pair in self.trading_pairs:
+            base, quote = pair.split('/')
+            symbol = await self.database.get_or_create_symbol(
+                symbol=pair,
+                exchange="binance",
+                base_asset=base,
+                quote_asset=quote
             )
             
-            # Validate trade parameters
-            params_valid, params_msg = self.analyzer.validate_trade_parameters(token_data, position_size)
-            if not params_valid:
-                logging.info(f"Invalid trade parameters for {token_address}: {params_msg}")
-                return False
+        self.logger.info("Trade manager initialized")
+        
+    async def update_market_data(self, timeframe: str = None):
+        """
+        Update market data for all trading pairs
+        
+        Args:
+            timeframe: Timeframe to update, if None, use strategy timeframe
+        """
+        if timeframe is None:
+            timeframe = self.config.strategy.timeframe
             
-            # Execute trade
-            success = await self.execute_trade(token_address, token_data, position_size)
-            if success:
-                self.active_trades[token_address] = {
-                    'entry_time': datetime.now(),
-                    'entry_price': token_data.get('price'),
-                    'position_size': position_size,
-                    'confidence': confidence
-                }
-                logging.info(f"Successfully entered trade for {token_address}")
-                
-            return success
-            
-        except Exception as e:
-            logging.error(f"Error processing trading opportunity: {str(e)}")
-            return False
-            
-    async def execute_trade(self, token_address: str, token_data: Dict, position_size: float) -> bool:
-        """Execute trade with proper position management"""
-        try:
-            # Get trade levels
-            tp_levels = self.analyzer.get_take_profit_levels(token_data)
-            sl_level = self.analyzer.get_stop_loss_level(token_data)
-            
-            # Execute buy order
-            buy_success = await self.unibot.buy_token(token_address, position_size)
-            if not buy_success:
-                logging.error(f"Buy order failed for {token_address}")
-                return False
-            
-            # Set take profit and stop loss
-            await self.unibot.set_auto_sell(
-                token_address,
-                take_profit=tp_levels[0],  # First TP level
-                stop_loss=sl_level
-            )
-            
-            # Record trade
-            self.trade_history.append({
-                'token_address': token_address,
-                'type': 'BUY',
-                'time': datetime.now(),
-                'price': token_data.get('price'),
-                'size': position_size,
-                'tp_levels': tp_levels,
-                'sl_level': sl_level
-            })
-            
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error executing trade: {str(e)}")
-            return False
-            
-    async def monitor_active_trades(self):
-        """Monitor and manage active trades"""
-        try:
-            for token_address, trade_data in list(self.active_trades.items()):
-                # Get current token data
-                token_data = await self.dexscreener.get_token_data(token_address)
-                if not token_data:
+        for pair in self.trading_pairs:
+            try:
+                # Get symbol from database
+                symbol = await self.database.get_symbol_by_name(pair)
+                if not symbol:
+                    self.logger.warning(f"Symbol {pair} not found in database")
                     continue
+                
+                # Fetch candle data from Binance
+                ohlcv_df = await self.binance_client.get_ohlcv(
+                    symbol=pair,
+                    timeframe=timeframe,
+                    limit=200  # Get enough data for indicators
+                )
+                
+                if ohlcv_df.empty:
+                    self.logger.warning(f"No OHLCV data returned for {pair}")
+                    continue
+                
+                # Convert to list of dictionaries for database storage
+                candles = []
+                for timestamp, row in ohlcv_df.iterrows():
+                    candles.append({
+                        'timestamp': timestamp,
+                        'open': row['open'],
+                        'high': row['high'],
+                        'low': row['low'],
+                        'close': row['close'],
+                        'volume': row['volume']
+                    })
+                
+                # Save candles to database
+                success = await self.database.save_candles(
+                    symbol_id=symbol.id,
+                    candles=candles,
+                    timeframe=timeframe
+                )
+                
+                if success:
+                    self.logger.info(f"Updated {len(candles)} candles for {pair}")
+                else:
+                    self.logger.warning(f"Failed to update candles for {pair}")
+                
+            except Exception as e:
+                self.logger.error(f"Error updating market data for {pair}: {str(e)}")
+                
+    async def check_for_signals(self) -> List[Dict]:
+        """
+        Check for trading signals across all pairs
+        
+        Returns:
+            List of signal dictionaries with symbol, signal_type, and confidence
+        """
+        signals = []
+        
+        for pair in self.trading_pairs:
+            try:
+                # Get symbol from database
+                symbol = await self.database.get_symbol_by_name(pair)
+                if not symbol:
+                    continue
+                
+                # Get candle data from database
+                df = await self.database.get_candles_as_dataframe(
+                    symbol_id=symbol.id,
+                    timeframe=self.config.strategy.timeframe,
+                    limit=200
+                )
+                
+                if df.empty:
+                    self.logger.warning(f"No candle data available for {pair}")
+                    continue
+                
+                # Get signal from strategy
+                signal_type, confidence = self.strategy.get_latest_signal(df)
+                
+                # Always log the signal regardless of type for debugging
+                self.logger.info(f"Signal for {pair}: {signal_type} with {confidence:.2f} confidence (price: {df.iloc[-1]['close']})")
+                
+                # Log the last 5 candles and calculated indicators for debugging
+                if len(df) >= 5:
+                    last_candles = df.tail(5)
+                    self.logger.info(f"Last 5 candles for {pair}:\n{last_candles}")
                     
-                current_price = token_data.get('price', 0)
-                entry_price = trade_data['entry_price']
+                    # Add calculated indicators if they exist
+                    with_indicators = self.strategy.calculate_indicators(df).tail(5)
+                    if 'fast_ma' in with_indicators.columns and 'slow_ma' in with_indicators.columns:
+                        self.logger.info(f"Indicators for {pair}:\nfast_ma: {with_indicators['fast_ma'].values}\nslow_ma: {with_indicators['slow_ma'].values}")
+                        if 'crossover' in with_indicators.columns:
+                            self.logger.info(f"Crossover values: {with_indicators['crossover'].values}")
                 
-                # Calculate current PnL
-                pnl_percent = ((current_price - entry_price) / entry_price) * 100
+                if signal_type != 'HOLD':
+                    signals.append({
+                        'symbol': symbol,
+                        'signal_type': signal_type,
+                        'confidence': confidence,
+                        'price': df.iloc[-1]['close']
+                    })
+                    
+                    self.logger.info(f"Found {signal_type} signal for {pair} with {confidence:.2f} confidence")
                 
-                # Check for exit conditions
-                if await self.should_exit_trade(token_address, token_data, trade_data, pnl_percent):
-                    # Execute sell
-                    if await self.unibot.sell_token(token_address):
-                        del self.active_trades[token_address]
+            except Exception as e:
+                self.logger.error(f"Error checking signals for {pair}: {str(e)}")
+                
+        return signals
+    
+    async def execute_signals(self, signals: List[Dict]):
+        """
+        Execute trading signals
+        
+        Args:
+            signals: List of signal dictionaries
+        """
+        if not signals:
+            return
+            
+        for signal in signals:
+            try:
+                symbol = signal['symbol']
+                signal_type = signal['signal_type']
+                confidence = signal['confidence']
+                current_price = signal['price']
+                
+                # Skip if we already have an active trade for this symbol
+                active_for_symbol = [t for t in self.active_trades.values() 
+                                     if t.symbol_id == symbol.id]
+                
+                if active_for_symbol:
+                    self.logger.info(f"Skipping {signal_type} signal for {symbol.symbol} - already have active trade")
+                    continue
+                
+                # Check if we've reached maximum active trades
+                if len(self.active_trades) >= self.config.strategy.max_active_trades:
+                    self.logger.info(f"Skipping {signal_type} signal for {symbol.symbol} - maximum active trades reached")
+                    continue
+                
+                # Check if we've reached maximum trades per day
+                # TODO: Implement daily trade limit check from database
+                
+                # Get account balance
+                balance = await self.binance_client.get_account_balance()
+                quote_currency = symbol.quote_asset
+                available_balance = balance.get(quote_currency, {}).get('free', 0)
+                
+                # Log the balance information
+                self.logger.info(f"Account balance: {balance}")
+                self.logger.info(f"Available {quote_currency} balance: {available_balance}")
+                
+                if quote_currency == 'USDT':
+                    # Calculate position size based on risk
+                    account_value = available_balance
+                    risk_amount = account_value * self.config.strategy.risk_per_trade
+                    
+                    # For BTC/USDT, convert USDT amount to BTC
+                    if symbol.base_asset == 'BTC':
+                        position_size = risk_amount / current_price
+                    else:
+                        position_size = risk_amount
+                    
+                    # Apply min/max limits
+                    position_size = max(position_size, self.config.strategy.min_position_size)
+                    position_size = min(position_size, self.config.strategy.max_position_size)
+                    
+                    # Round to appropriate precision for the symbol
+                    # Hardcoded to 6 decimal places for BTC, should ideally come from exchange info
+                    position_size = round(position_size, 6)
+                    
+                    # Skip if balance too low
+                    cost = position_size * current_price
+                    if cost > available_balance:
+                        self.logger.warning(f"Insufficient balance for {signal_type} signal on {symbol.symbol}")
+                        self.logger.warning(f"Required cost: {cost}, Available balance: {available_balance}")
+                        self.logger.warning(f"Position size: {position_size}, Current price: {current_price}")
+                        continue
+                    
+                    # Calculate take profit and stop loss
+                    df = await self.database.get_candles_as_dataframe(
+                        symbol_id=symbol.id,
+                        timeframe=self.config.strategy.timeframe,
+                        limit=50
+                    )
+                    
+                    take_profit_pct = self.config.strategy.take_profit
+                    stop_loss_pct = self.config.strategy.stop_loss
+                    
+                    take_profit, stop_loss = self.strategy.calculate_take_profit_stop_loss(
+                        df, current_price, signal_type, take_profit_pct, stop_loss_pct
+                    )
+                    
+                    # Execute the trade
+                    async with self.trade_lock:
+                        if signal_type == 'BUY':
+                            order = await self.binance_client.create_market_order(
+                                symbol=symbol.symbol,
+                                side='buy',
+                                amount=position_size
+                            )
+                            
+                            if order:
+                                # Create trade record in database
+                                trade = await self.database.create_trade(
+                                    symbol_id=symbol.id,
+                                    trade_type='BUY',
+                                    entry_price=order.get('price', current_price),
+                                    quantity=position_size,
+                                    entry_time=datetime.utcnow(),
+                                    take_profit=take_profit,
+                                    stop_loss=stop_loss,
+                                    signal_type='CROSSOVER'
+                                )
+                                
+                                if trade:
+                                    self.active_trades[trade.id] = trade
+                                    self.logger.info(f"Created BUY trade for {symbol.symbol} - {position_size} @ {current_price}")
+                            
+                        elif signal_type == 'SELL':
+                            # For simplicity, we're assuming this is for opening a short position
+                            # In reality, you would need margin/futures for shorting
+                            self.logger.info(f"SELL signal for {symbol.symbol} - not implemented for spot trading")
+                            
+                            # If you're using futures, you could implement short entry here
+                
+            except Exception as e:
+                self.logger.error(f"Error executing signal for {signal['symbol'].symbol}: {str(e)}")
+    
+    async def monitor_active_trades(self):
+        """Monitor active trades for exit conditions"""
+        if not self.active_trades:
+            return
+            
+        trades_to_check = list(self.active_trades.values())
+        
+        for trade in trades_to_check:
+            try:
+                symbol = await self.database.get_symbol_by_name(trade.symbol.symbol)
+                if not symbol:
+                    continue
+                
+                # Get latest price data
+                ticker = await self.binance_client.get_ticker(symbol.symbol)
+                current_price = ticker.get('last', 0)
+                
+                if current_price <= 0:
+                    continue
+                
+                # Check for take profit or stop loss
+                if trade.trade_type == 'BUY':
+                    # For long positions
+                    take_profit_hit = trade.take_profit and current_price >= trade.take_profit
+                    stop_loss_hit = trade.stop_loss and current_price <= trade.stop_loss
+                else:
+                    # For short positions
+                    take_profit_hit = trade.take_profit and current_price <= trade.take_profit
+                    stop_loss_hit = trade.stop_loss and current_price >= trade.stop_loss
+                
+                # Check for trend reversal signal
+                df = await self.database.get_candles_as_dataframe(
+                    symbol_id=symbol.id,
+                    timeframe=self.config.strategy.timeframe,
+                    limit=200
+                )
+                
+                if not df.empty:
+                    signal_type, _ = self.strategy.get_latest_signal(df)
+                    
+                    # Exit if signal is opposite to our position
+                    signal_exit = (trade.trade_type == 'BUY' and signal_type == 'SELL') or \
+                                 (trade.trade_type == 'SELL' and signal_type == 'BUY')
+                else:
+                    signal_exit = False
+                
+                # Exit the trade if any exit condition is met
+                if take_profit_hit or stop_loss_hit or signal_exit:
+                    exit_reason = "take profit" if take_profit_hit else \
+                                  "stop loss" if stop_loss_hit else \
+                                  "signal reversal"
+                    
+                    self.logger.info(f"Exiting {trade.trade_type} trade {trade.id} due to {exit_reason}")
+                    
+                    # Execute exit order
+                    side = 'sell' if trade.trade_type == 'BUY' else 'buy'
+                    
+                    order = await self.binance_client.create_market_order(
+                        symbol=symbol.symbol,
+                        side=side,
+                        amount=trade.quantity
+                    )
+                    
+                    if order:
+                        # Calculate PnL
+                        exit_price = order.get('price', current_price)
                         
-                        # Record trade
-                        self.trade_history.append({
-                            'token_address': token_address,
-                            'type': 'SELL',
-                            'time': datetime.now(),
-                            'price': current_price,
-                            'pnl_percent': pnl_percent
-                        })
+                        if trade.trade_type == 'BUY':
+                            pnl = (exit_price - trade.entry_price) * trade.quantity
+                            pnl_percent = ((exit_price / trade.entry_price) - 1) * 100
+                        else:
+                            pnl = (trade.entry_price - exit_price) * trade.quantity
+                            pnl_percent = ((trade.entry_price / exit_price) - 1) * 100
                         
-        except Exception as e:
-            logging.error(f"Error monitoring trades: {str(e)}")
-            
-    async def should_exit_trade(self, token_address: str, current_data: Dict, trade_data: Dict, pnl_percent: float) -> bool:
-        """Determine if we should exit a trade"""
+                        # Update trade in database
+                        await self.database.update_trade(
+                            trade_id=trade.id,
+                            exit_price=exit_price,
+                            exit_time=datetime.utcnow(),
+                            status="CLOSED",
+                            pnl=pnl,
+                            pnl_percent=pnl_percent
+                        )
+                        
+                        # Remove from active trades
+                        if trade.id in self.active_trades:
+                            del self.active_trades[trade.id]
+                            
+                        # Update trading stats
+                        await self.database.update_trading_stats()
+                        
+                        self.logger.info(f"Closed trade {trade.id} with PnL: {pnl:.8f} ({pnl_percent:.2f}%)")
+                
+            except Exception as e:
+                self.logger.error(f"Error monitoring trade {trade.id}: {str(e)}")
+    
+    async def calculate_performance(self):
+        """Calculate and return trading performance summary"""
         try:
-            # Check security status
-            security_status, _ = await self.security.check_token_security(token_address)
-            if not security_status:
-                logging.info(f"Security check triggered exit for {token_address}")
-                return True
+            # Get performance summary from database
+            performance = await self.database.get_performance_summary()
             
-            # Time-based exit (24h max hold time)
-            time_in_trade = datetime.now() - trade_data['entry_time']
-            if time_in_trade.total_seconds() > 24 * 3600:
-                logging.info(f"Time-based exit for {token_address}")
-                return True
+            # Add active positions information
+            active_positions_value = 0
             
-            # Trend reversal exit
-            _, confidence, _ = self.analyzer.analyze_token(current_data)
-            if confidence < 0.3 and pnl_percent > 0:
-                logging.info(f"Trend reversal exit for {token_address}")
-                return True
+            for trade_id, trade in self.active_trades.items():
+                symbol = await self.database.get_symbol_by_name(trade.symbol.symbol)
+                if not symbol:
+                    continue
+                
+                ticker = await self.binance_client.get_ticker(symbol.symbol)
+                current_price = ticker.get('last', 0)
+                
+                if current_price > 0:
+                    position_value = trade.quantity * current_price
+                    active_positions_value += position_value
             
-            return False
+            performance['active_positions'] = len(self.active_trades)
+            performance['active_positions_value'] = active_positions_value
             
-        except Exception as e:
-            logging.error(f"Error checking exit conditions: {str(e)}")
-            return False
-            
-    def get_trading_statistics(self) -> Dict:
-        """Get trading statistics"""
-        try:
-            completed_trades = [t for t in self.trade_history if t['type'] == 'SELL']
-            
-            total_trades = len(completed_trades)
-            if total_trades == 0:
-                return {
-                    'total_trades': 0,
-                    'win_rate': 0,
-                    'avg_pnl': 0,
-                    'active_trades': len(self.active_trades)
-                }
-            
-            profitable_trades = len([t for t in completed_trades if t.get('pnl_percent', 0) > 0])
-            win_rate = (profitable_trades / total_trades) * 100
-            avg_pnl = sum(t.get('pnl_percent', 0) for t in completed_trades) / total_trades
-            
-            return {
-                'total_trades': total_trades,
-                'win_rate': win_rate,
-                'avg_pnl': avg_pnl,
-                'active_trades': len(self.active_trades)
-            }
+            return performance
             
         except Exception as e:
-            logging.error(f"Error calculating statistics: {str(e)}")
+            self.logger.error(f"Error calculating performance: {str(e)}")
             return {}
+    
+    async def run_trading_cycle(self):
+        """Execute one full trading cycle"""
+        try:
+            # Update market data
+            await self.update_market_data()
+            
+            # Check for trading signals
+            signals = await self.check_for_signals()
+            
+            # Execute signals if any
+            await self.execute_signals(signals)
+            
+            # Monitor active trades
+            await self.monitor_active_trades()
+            
+            # Calculate performance (for logging/reporting)
+            performance = await self.calculate_performance()
+            
+            # Log summary
+            active_count = performance.get('active_positions', 0)
+            active_value = performance.get('active_positions_value', 0)
+            total_pnl = performance.get('total_pnl', 0)
+            
+            self.logger.info(f"Trading cycle complete. Active positions: {active_count}, " +
+                           f"Value: {active_value:.2f}, Total PnL: {total_pnl:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"Error in trading cycle: {str(e)}")
